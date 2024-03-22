@@ -1,0 +1,154 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform: 'AWS::Serverless-2016-10-31'
+Description: AWS SAM Template for Lambda Function with Lambda Layer and EventBridge
+Parameters:
+  AthenaDatabase:
+    Type: String
+    Description: "Athena's Database to query CUR"
+  AthenaTable:
+    Type: String
+    Description: "Athena's Table to query CUR"
+  AthenaQueryResultBucket:
+    Type: String
+    Description: "Bucket where place to put SP qery results"
+  AthenaQueryResultDir:
+    Type: String
+    Description: "Path where place to put SP qery results"
+  CURBucket:
+    Type: String
+    Description: "Bucket where CUR is placed"
+  CSVOutputBucket:
+    Type: String
+    Description: "Bucket to place the csv with aggregated costs"
+  EventBridgeName:
+    Type: String
+  LambdaFunctionName:
+    Type: String
+  SPPurchaseAccountID:
+    Type: String
+    Description: "Account ID that purchased SP"
+    ConstraintDescription: must be exactly 12 digits
+  RootOUId:
+    Type: String
+
+  
+Resources:
+# Lambda
+  LambdaLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      ContentUri: lambda/common_layer/
+      CompatibleRuntimes:
+        - python3.11
+      LayerName: pandas
+    Metadata:
+      BuildMethod: python3.11
+      BuildArchitecture: x86_64
+  LambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Architectures:
+        - x86_64
+      CodeUri: lambda/
+      Environment:
+        Variables:
+          AthenaDatabase: !Ref AthenaDatabase
+          AthenaTable: !Ref AthenaTable
+          AthenaQueryResultBucket: !Ref AthenaQueryResultBucket
+          AthenaQueryResultDir: !Ref AthenaQueryResultDir
+          CSVOutputBucket: !Ref CSVOutputBucket
+          SPPurchaseAccountID: !Ref SPPurchaseAccountID
+          RootOUId: !Ref RootOUId
+      FunctionName: !Ref LambdaFunctionName
+      Handler: lambda_function.lambda_handler
+      Layers:
+        - !Ref LambdaLayer
+      LoggingConfig:
+        ApplicationLogLevel: INFO
+        LogFormat: JSON
+      Role: !GetAtt LambdaFunctionRole.Arn
+      Runtime: python3.11
+      Timeout: 180
+      Events:
+        ScheduleEvent:
+          Type: ScheduleV2
+          Properties:
+            Name: !Ref EventBridgeName
+            ScheduleExpression: cron(0 1 10 * ? *)
+            State: ENABLED
+
+  LambdaFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${LambdaFunctionName}"
+      RetentionInDays: 365
+
+  LambdaFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "for-lambdafunction-${LambdaFunctionName}"
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyName: Use-Athena-Policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "athena:*"
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - "glue:CreateDatabase"
+                  - "glue:DeleteDatabase"
+                  - "glue:GetDatabase"
+                  - "glue:GetDatabases"
+                  - "glue:UpdateDatabase"
+                  - "glue:CreateTable"
+                  - "glue:DeleteTable"
+                  - "glue:BatchDeleteTable"
+                  - "glue:UpdateTable"
+                  - "glue:GetTable"
+                  - "glue:GetTables"
+                  - "glue:BatchCreatePartition"
+                  - "glue:CreatePartition"
+                  - "glue:DeletePartition"
+                  - "glue:BatchDeletePartition"
+                  - "glue:UpdatePartition"
+                  - "glue:GetPartition"
+                  - "glue:GetPartitions"
+                  - "glue:BatchGetPartition"
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - "s3:GetObject"
+                  - "s3:ListBucket"
+                Resource: !Sub "arn:aws:s3:::${CURBucket}*"
+              - Effect: Allow
+                Action:
+                  - "s3:GetBucketLocation"
+                  - "s3:GetObject"
+                  - "s3:ListBucket"
+                  - "s3:PutObject"
+                Resource: 
+                  - !Sub "arn:aws:s3:::${AthenaQueryResultBucket}"
+                  - !Sub "arn:aws:s3:::${AthenaQueryResultBucket}/*"
+        - PolicyName: Put-CostRport-Policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:PutObject"
+                Resource: !Sub "arn:aws:s3:::${CSVOutputBucket}/*"    
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        - "arn:aws:iam::aws:policy/AWSOrganizationsReadOnlyAccess"
